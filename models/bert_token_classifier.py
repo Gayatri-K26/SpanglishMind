@@ -18,7 +18,9 @@ from pathlib import Path
 import inspect
 
 from datasets import Dataset, DatasetDict
-from sklearn.metrics import precision_recall_fscore_support, accuracy_score
+from sklearn.metrics import precision_recall_fscore_support, accuracy_score, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
 from transformers import (
 	AutoTokenizer,
 	AutoModelForTokenClassification,
@@ -119,6 +121,59 @@ def compute_metrics(pred):
 	return {"precision": precision, "recall": recall, "f1": f1, "accuracy": acc}
 
 
+def plot_confusion_matrix(pred, output_dir, label_names=None):
+	"""Plot and save confusion matrix heatmap."""
+	if label_names is None:
+		label_names = ['English', 'Spanish']
+	
+	preds = np.argmax(pred.predictions, axis=-1)
+	labels = pred.label_ids
+	
+	# Flatten and filter out padding (-100)
+	preds_flat = []
+	labels_flat = []
+	for p_seq, l_seq in zip(preds, labels):
+		for p, l in zip(p_seq, l_seq):
+			if l != -100:
+				preds_flat.append(p)
+				labels_flat.append(l)
+	
+	if len(labels_flat) == 0:
+		print("No valid predictions to plot confusion matrix.")
+		return
+	
+	# Compute confusion matrix
+	cm = confusion_matrix(labels_flat, preds_flat)
+	
+	# Plot
+	plt.figure(figsize=(8, 6))
+	sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+	            xticklabels=label_names, yticklabels=label_names,
+	            cbar_kws={'label': 'Count'})
+	plt.xlabel('Predicted Label', fontsize=12)
+	plt.ylabel('True Label', fontsize=12)
+	plt.title('Token-Level Confusion Matrix', fontsize=14, fontweight='bold')
+	plt.tight_layout()
+	
+	# Save
+	output_path = Path(output_dir) / 'confusion_matrix.png'
+	plt.savefig(output_path, dpi=300, bbox_inches='tight')
+	print(f"Confusion matrix saved to {output_path}")
+	plt.close()
+	
+	# Also save raw counts to JSON
+	cm_dict = {
+		'true_negative': int(cm[0, 0]),  # English predicted as English
+		'false_positive': int(cm[0, 1]), # English predicted as Spanish
+		'false_negative': int(cm[1, 0]), # Spanish predicted as English
+		'true_positive': int(cm[1, 1]),  # Spanish predicted as Spanish
+	}
+	json_path = Path(output_dir) / 'confusion_matrix.json'
+	with open(json_path, 'w') as f:
+		json.dump(cm_dict, f, indent=2)
+	print(f"Confusion matrix counts saved to {json_path}")
+
+
 def main(args):
 	data_path = args.data_path
 	print(f"Loading data from {data_path}...")
@@ -186,8 +241,25 @@ def main(args):
 		compute_metrics=compute_metrics,
 	)
 
-	print('Starting training...')
-	trainer.train()
+	# Only train if epochs > 0
+	if args.epochs > 0:
+		print('Starting training...')
+		trainer.train()
+		print(f"Saving model to {args.output_dir} ...")
+		trainer.save_model(args.output_dir)
+	else:
+		print('Skipping training (--epochs 0). Loading existing model for evaluation...')
+		# Re-load the saved model
+		model = AutoModelForTokenClassification.from_pretrained(args.output_dir)
+		trainer = Trainer(
+			model=model,
+			args=training_args,
+			train_dataset=tokenized['train'],
+			eval_dataset=tokenized['validation'],
+			tokenizer=tokenizer,
+			data_collator=data_collator,
+			compute_metrics=compute_metrics,
+		)
 
 	print('Evaluating on test set...')
 	test_results = trainer.predict(tokenized['test'])
@@ -195,9 +267,15 @@ def main(args):
 	print('\nTest metrics:')
 	for k, v in metrics.items():
 		print(f"{k}: {v:.4f}")
-
-	print(f"Saving model to {args.output_dir} ...")
-	trainer.save_model(args.output_dir)
+	
+	# Save test metrics to JSON
+	metrics_path = Path(args.output_dir) / 'test_metrics.json'
+	with open(metrics_path, 'w') as f:
+		json.dump(metrics, f, indent=2)
+	print(f"Test metrics saved to {metrics_path}")
+	
+	# Plot confusion matrix
+	plot_confusion_matrix(test_results, args.output_dir, label_names=['English', 'Spanish'])
 
 
 if __name__ == '__main__':
