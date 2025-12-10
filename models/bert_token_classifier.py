@@ -173,7 +173,6 @@ def plot_confusion_matrix(pred, output_dir, label_names=None):
 		json.dump(cm_dict, f, indent=2)
 	print(f"Confusion matrix counts saved to {json_path}")
 
-
 def main(args):
 	data_path = args.data_path
 	print(f"Loading data from {data_path}...")
@@ -215,19 +214,13 @@ def main(args):
 		num_train_epochs=args.epochs,
 		weight_decay=0.01,
 		logging_dir=f"{args.output_dir}/logs",
+		logging_steps=50,  # Log training metrics frequently
+		eval_strategy='epoch',  # Evaluate every epoch to get validation metrics
+		save_strategy='epoch',  # Save checkpoint every epoch
+		load_best_model_at_end=True,  # Load best checkpoint at end
+		metric_for_best_model='f1',  # Use F1 score to determine best model
 		push_to_hub=False,
 	)
-
-	# Add newer args only if supported by this transformers version
-	try:
-		init_sig = inspect.signature(TrainingArguments.__init__)
-		if 'evaluation_strategy' in init_sig.parameters:
-			training_kwargs['evaluation_strategy'] = 'epoch'
-		if 'save_strategy' in init_sig.parameters:
-			training_kwargs['save_strategy'] = 'epoch'
-	except Exception:
-		# If anything goes wrong inspecting, fall back to minimal args
-		pass
 
 	training_args = TrainingArguments(**training_kwargs)
 
